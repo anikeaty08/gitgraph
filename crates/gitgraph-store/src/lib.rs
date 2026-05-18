@@ -138,10 +138,11 @@ impl GraphStore {
         for symbol in self.symbols()? {
             let hay = format!("{} {} {}", symbol.name, symbol.signature, symbol.file_path).to_lowercase();
             if hay.contains(&q) {
+                let label = format!("{} {}", symbol.kind_label(), symbol.name);
                 hits.push(QueryHit {
                     kind: "symbol".to_string(),
                     id: symbol.id,
-                    label: format!("{} {}", symbol.kind_label(), symbol.name),
+                    label,
                     path: Some(symbol.file_path),
                     score: score(&hay, &q),
                 });
