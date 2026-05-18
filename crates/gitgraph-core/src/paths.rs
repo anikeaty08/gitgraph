@@ -43,9 +43,9 @@ impl GraphPaths {
             &self.analysis_cache,
             &self.logs,
         ] {
-            fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))?;
+            fs::create_dir_all(path)
+                .with_context(|| format!("failed to create {}", path.display()))?;
         }
         Ok(())
     }
 }
-

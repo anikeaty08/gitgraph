@@ -29,9 +29,9 @@ The first implementation includes:
 - workspace and crate architecture
 - `plan.md`
 - config and `.gitgraph` layout
-- current snapshot scanning for Python, JavaScript, and TypeScript
+- current snapshot scanning for Python, JavaScript, TypeScript, and Rust
 - symbol/import extraction
-- Git history indexing through `git2`
+- Git history indexing through fast `git log`/`git diff-tree` plumbing
 - JSONL graph persistence under `.gitgraph/graph.kuzu`
 - Kuzu Cypher schema generation
 - basic query, explain, path, community, and dead-code commands

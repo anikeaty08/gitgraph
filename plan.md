@@ -68,7 +68,7 @@ gitgraph/
   crates/
     gitgraph-cli/        # clap CLI entrypoint
     gitgraph-core/       # shared domain types, config, paths
-    gitgraph-git/        # git2 history/current repo access
+    gitgraph-git/        # fast Git CLI plumbing for history/current repo access
     gitgraph-parse/      # source parsing and extractors
     gitgraph-analyze/    # path, dead-code, coupling, community jobs
     gitgraph-store/      # graph persistence and Kuzu schema
@@ -88,8 +88,8 @@ Core crates and intended dependencies:
 - `tracing` + `tracing-subscriber`: logs.
 - `ignore`: `.gitignore`-aware walking.
 - `rayon`: parallel parsing/history analysis.
-- `git2`: Git history access.
-- `tree-sitter`, `tree-sitter-python`, `tree-sitter-javascript`, `tree-sitter-typescript`: production parser backend.
+- `git` executable plumbing: fast history access without native build-script friction on locked-down Windows machines.
+- `tree-sitter`, `tree-sitter-python`, `tree-sitter-javascript`, `tree-sitter-typescript`, `tree-sitter-rust`: production parser backend.
 - `kuzu`: embedded graph DB adapter.
 - `petgraph`: in-memory graph algorithms.
 - `leiden-rs`: native Leiden community detection.
@@ -177,7 +177,7 @@ Git does not store renames as first-class facts, so file and symbol moves are in
 
 ### Source Parser
 
-V1 extracts Python, JavaScript, and TypeScript. The current implementation uses a lightweight line-based extractor so the CLI works immediately. The parser crate is intentionally isolated so the production tree-sitter backend can replace the extractor without changing CLI/store/MCP interfaces.
+V1 extracts Python, JavaScript, TypeScript, and Rust. The current implementation uses a fast lightweight line-based extractor so the CLI works immediately. The parser crate is intentionally isolated so the production tree-sitter backend can replace the extractor without changing CLI/store/MCP interfaces.
 
 Extracted facts:
 
@@ -324,7 +324,7 @@ Security defaults:
 
 ### Phase 3: Git History Graph
 
-- Use `git2` to walk commits.
+- Use fast `git log` and `git diff-tree` plumbing to walk commits.
 - Store commits, parent edges, touched files, file-level changes.
 - Compare symbol hashes before/after in the next parser-history pass.
 - Add `INTRODUCED`, `MODIFIED`, `REMOVED`, and inferred `RENAMED_OR_MOVED`.
@@ -484,12 +484,11 @@ Security tests:
 
 - Build in Rust.
 - Use KuzuDB as the target graph model and native adapter destination.
-- Support Python, JavaScript, and TypeScript deeply in v1.
+- Support Python, JavaScript, TypeScript, and Rust deeply in v1.
 - Use tree-sitter as the production parser backend after the initial extractor is validated.
-- Use `git2` for Git history.
+- Use Git CLI plumbing for Git history in v1; keep the backend isolated so a libgit2 adapter can be added later if needed.
 - Use `petgraph` for in-memory path analysis.
 - Use `leiden-rs` for native Leiden community detection in the advanced analysis phase.
 - MCP starts read-only.
 - Raw ASTs are not stored as the primary graph artifact.
 - The goal is repo memory for AI agents: structural, historical, statistical, and semantic evidence with minimal token usage.
-

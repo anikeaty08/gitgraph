@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use gitgraph_core::{
-    stable_hash, FileRecord, ImportRecord, Language, RepoRecord, ScanSnapshot, SymbolKind,
-    SymbolRecord,
+    stable_hash, FileRecord, ImportRecord, Language, ParserKind, RepoRecord, ScanSnapshot,
+    ScanSummary, SkippedFile, SymbolKind, SymbolRecord,
 };
 use ignore::WalkBuilder;
 use rayon::prelude::*;
@@ -12,11 +12,14 @@ use std::{
     sync::OnceLock,
 };
 
+pub const PARSER_VERSION: &str = "regex-fallback-3";
+
 #[derive(Debug, Clone)]
 pub struct CurrentScanOptions {
     pub max_file_bytes: u64,
     pub follow_symlinks: bool,
     pub include_lockfiles: bool,
+    pub previous: Option<PreviousScan>,
 }
 
 impl Default for CurrentScanOptions {
@@ -25,13 +28,26 @@ impl Default for CurrentScanOptions {
             max_file_bytes: 1_000_000,
             follow_symlinks: false,
             include_lockfiles: false,
+            previous: None,
         }
     }
 }
 
-pub fn scan_current(repo: RepoRecord, root: &Path, options: &CurrentScanOptions) -> Result<ScanSnapshot> {
-    let files = collect_source_files(root, options)?;
-    let parsed: Vec<ParsedFile> = files
+#[derive(Debug, Clone, Default)]
+pub struct PreviousScan {
+    pub files: Vec<FileRecord>,
+    pub symbols: Vec<SymbolRecord>,
+    pub imports: Vec<ImportRecord>,
+}
+
+pub fn scan_current(
+    repo: RepoRecord,
+    root: &Path,
+    options: &CurrentScanOptions,
+) -> Result<ScanSnapshot> {
+    let collection = collect_source_files(root, options)?;
+    let parsed: Vec<ParsedFile> = collection
+        .files
         .par_iter()
         .filter_map(|path| match parse_file(root, path, options) {
             Ok(Some(parsed)) => Some(Ok(parsed)),
@@ -43,22 +59,52 @@ pub fn scan_current(repo: RepoRecord, root: &Path, options: &CurrentScanOptions)
     let mut file_records = Vec::new();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut reused = 0;
 
     for parsed_file in parsed {
+        if parsed_file.reused {
+            reused += 1;
+        }
         file_records.push(parsed_file.file);
         symbols.extend(parsed_file.symbols);
         imports.extend(parsed_file.imports);
     }
 
+    let mut languages_seen: Vec<String> = file_records
+        .iter()
+        .map(|file| file.language.as_str().to_string())
+        .collect();
+    languages_seen.sort();
+    languages_seen.dedup();
+
+    let summary = ScanSummary {
+        files_seen: file_records.len() + collection.skipped.len(),
+        files_scanned: file_records.len().saturating_sub(reused),
+        files_reused: reused,
+        files_skipped: collection.skipped.len(),
+        symbols: symbols.len(),
+        imports: imports.len(),
+        languages_seen,
+        largest_files_skipped: collection.skipped,
+        parser_version: PARSER_VERSION.to_string(),
+    };
+
     Ok(ScanSnapshot {
         repo,
+        summary,
         files: file_records,
         symbols,
         imports,
     })
 }
 
-fn collect_source_files(root: &Path, options: &CurrentScanOptions) -> Result<Vec<PathBuf>> {
+#[derive(Debug, Default)]
+struct SourceCollection {
+    files: Vec<PathBuf>,
+    skipped: Vec<SkippedFile>,
+}
+
+fn collect_source_files(root: &Path, options: &CurrentScanOptions) -> Result<SourceCollection> {
     let mut walker = WalkBuilder::new(root);
     walker
         .hidden(false)
@@ -67,7 +113,7 @@ fn collect_source_files(root: &Path, options: &CurrentScanOptions) -> Result<Vec
         .git_exclude(true)
         .follow_links(options.follow_symlinks);
 
-    let mut files = Vec::new();
+    let mut collection = SourceCollection::default();
     for entry in walker.build() {
         let entry = entry?;
         let path = entry.path();
@@ -80,9 +126,26 @@ fn collect_source_files(root: &Path, options: &CurrentScanOptions) -> Result<Vec
         if Language::from_path(path) == Language::Unknown {
             continue;
         }
-        files.push(path.to_path_buf());
+        let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        if size > options.max_file_bytes {
+            collection.skipped.push(SkippedFile {
+                path: path
+                    .strip_prefix(root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+                size_bytes: size,
+                reason: format!("larger than max_file_bytes {}", options.max_file_bytes),
+            });
+            continue;
+        }
+        collection.files.push(path.to_path_buf());
     }
-    Ok(files)
+    collection
+        .skipped
+        .sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    collection.skipped.truncate(5);
+    Ok(collection)
 }
 
 fn should_skip(path: &Path, options: &CurrentScanOptions) -> bool {
@@ -104,7 +167,10 @@ fn should_skip(path: &Path, options: &CurrentScanOptions) -> bool {
         return true;
     }
     if !options.include_lockfiles {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
         return matches!(
             name,
             "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "Cargo.lock" | "poetry.lock"
@@ -118,15 +184,22 @@ struct ParsedFile {
     file: FileRecord,
     symbols: Vec<SymbolRecord>,
     imports: Vec<ImportRecord>,
+    reused: bool,
 }
 
-fn parse_file(root: &Path, path: &Path, options: &CurrentScanOptions) -> Result<Option<ParsedFile>> {
-    let metadata = fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+fn parse_file(
+    root: &Path,
+    path: &Path,
+    options: &CurrentScanOptions,
+) -> Result<Option<ParsedFile>> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
     if metadata.len() > options.max_file_bytes {
         return Ok(None);
     }
 
-    let source = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let source =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let language = Language::from_path(path);
     let rel_path = path
         .strip_prefix(root)
@@ -134,6 +207,32 @@ fn parse_file(root: &Path, path: &Path, options: &CurrentScanOptions) -> Result<
         .to_string_lossy()
         .replace('\\', "/");
     let hash = stable_hash(source.as_bytes());
+
+    if let Some(previous) = &options.previous {
+        if let Some(previous_file) = previous.files.iter().find(|file| {
+            file.path == rel_path
+                && file.current_hash == hash
+                && file.parser_kind != ParserKind::Unknown
+        }) {
+            return Ok(Some(ParsedFile {
+                file: previous_file.clone(),
+                symbols: previous
+                    .symbols
+                    .iter()
+                    .filter(|symbol| symbol.file_path == rel_path)
+                    .cloned()
+                    .collect(),
+                imports: previous
+                    .imports
+                    .iter()
+                    .filter(|import| import.file_path == rel_path)
+                    .cloned()
+                    .collect(),
+                reused: true,
+            }));
+        }
+    }
+
     let file = FileRecord {
         id: stable_hash(format!("file:{rel_path}")),
         path: rel_path.clone(),
@@ -142,6 +241,7 @@ fn parse_file(root: &Path, path: &Path, options: &CurrentScanOptions) -> Result<
         current_hash: hash,
         size_bytes: metadata.len(),
         is_current: true,
+        parser_kind: ParserKind::RegexFallback,
     };
 
     let symbols = extract_symbols(&rel_path, language, &source);
@@ -151,13 +251,16 @@ fn parse_file(root: &Path, path: &Path, options: &CurrentScanOptions) -> Result<
         file,
         symbols,
         imports,
+        reused: false,
     }))
 }
 
 fn extract_symbols(path: &str, language: Language, source: &str) -> Vec<SymbolRecord> {
     match language {
         Language::Python => extract_python_symbols(path, source),
-        Language::JavaScript | Language::TypeScript => extract_js_ts_symbols(path, language, source),
+        Language::JavaScript | Language::TypeScript => {
+            extract_js_ts_symbols(path, language, source)
+        }
         Language::Rust => extract_rust_symbols(path, source),
         Language::Unknown => Vec::new(),
     }
@@ -169,10 +272,26 @@ fn extract_python_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
         let line_no = idx + 1;
         if let Some(cap) = py_def_re().captures(line) {
             let name = cap[1].to_string();
-            symbols.push(symbol(path, Language::Python, SymbolKind::Function, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                Language::Python,
+                SymbolKind::Function,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = py_class_re().captures(line) {
             let name = cap[1].to_string();
-            symbols.push(symbol(path, Language::Python, SymbolKind::Class, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                Language::Python,
+                SymbolKind::Class,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         }
     }
     symbols
@@ -184,19 +303,59 @@ fn extract_js_ts_symbols(path: &str, language: Language, source: &str) -> Vec<Sy
         let line_no = idx + 1;
         if let Some(cap) = js_function_re().captures(line) {
             let name = cap[3].to_string();
-            symbols.push(symbol(path, language, SymbolKind::Function, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                language,
+                SymbolKind::Function,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = js_class_re().captures(line) {
             let name = cap[2].to_string();
-            symbols.push(symbol(path, language, SymbolKind::Class, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                language,
+                SymbolKind::Class,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = js_interface_re().captures(line) {
             let name = cap[2].to_string();
-            symbols.push(symbol(path, language, SymbolKind::Interface, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                language,
+                SymbolKind::Interface,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = js_type_re().captures(line) {
             let name = cap[2].to_string();
-            symbols.push(symbol(path, language, SymbolKind::Type, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                language,
+                SymbolKind::Type,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = js_const_fn_re().captures(line) {
             let name = cap[2].to_string();
-            symbols.push(symbol(path, language, SymbolKind::Function, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                language,
+                SymbolKind::Function,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         }
     }
     symbols
@@ -204,20 +363,56 @@ fn extract_js_ts_symbols(path: &str, language: Language, source: &str) -> Vec<Sy
 
 fn extract_rust_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
     let mut symbols = Vec::new();
+    let mut in_raw_string = false;
     for (idx, line) in source.lines().enumerate() {
+        if update_rust_raw_string_state(line, &mut in_raw_string) {
+            continue;
+        }
         let line_no = idx + 1;
         if let Some(cap) = rust_fn_re().captures(line) {
             let name = cap[4].to_string();
-            symbols.push(symbol(path, Language::Rust, SymbolKind::Function, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                Language::Rust,
+                SymbolKind::Function,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = rust_struct_re().captures(line) {
             let name = cap[3].to_string();
-            symbols.push(symbol(path, Language::Rust, SymbolKind::Struct, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                Language::Rust,
+                SymbolKind::Struct,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = rust_enum_re().captures(line) {
             let name = cap[3].to_string();
-            symbols.push(symbol(path, Language::Rust, SymbolKind::Enum, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                Language::Rust,
+                SymbolKind::Enum,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         } else if let Some(cap) = rust_trait_re().captures(line) {
             let name = cap[3].to_string();
-            symbols.push(symbol(path, Language::Rust, SymbolKind::Trait, &name, line.trim(), line_no, line));
+            symbols.push(symbol(
+                path,
+                Language::Rust,
+                SymbolKind::Trait,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+            ));
         }
     }
     symbols
@@ -244,6 +439,10 @@ fn symbol(
         start_line: line_no,
         end_line: line_no,
         body_hash: stable_hash(body),
+        parser_kind: ParserKind::RegexFallback,
+        symbol_path: name.to_string(),
+        container_symbol: None,
+        doc_comment: None,
     }
 }
 
@@ -286,12 +485,34 @@ fn extract_js_ts_imports(path: &str, source: &str) -> Vec<ImportRecord> {
 
 fn extract_rust_imports(path: &str, source: &str) -> Vec<ImportRecord> {
     let mut imports = Vec::new();
+    let mut in_raw_string = false;
     for (idx, line) in source.lines().enumerate() {
+        if update_rust_raw_string_state(line, &mut in_raw_string) {
+            continue;
+        }
         if let Some(cap) = rust_use_re().captures(line) {
             imports.push(import(path, line, &cap[1], idx + 1));
         }
     }
     imports
+}
+
+fn update_rust_raw_string_state(line: &str, in_raw_string: &mut bool) -> bool {
+    let trimmed = line.trim();
+    if *in_raw_string {
+        if trimmed.contains("\"#") || trimmed.contains("\";") {
+            *in_raw_string = false;
+        }
+        return true;
+    }
+    if trimmed.contains("r#\"") || trimmed.contains("r\"") {
+        let single_line = trimmed.contains("\"#;") || trimmed.matches('"').count() >= 2;
+        if !single_line {
+            *in_raw_string = true;
+        }
+        return true;
+    }
+    false
 }
 
 fn cached_regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
@@ -320,7 +541,10 @@ fn py_from_re() -> &'static Regex {
 
 fn js_function_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*(export\s+)?(async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+    cached_regex(
+        &RE,
+        r"^\s*(export\s+)?(async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+    )
 }
 
 fn js_class_re() -> &'static Regex {
@@ -330,7 +554,10 @@ fn js_class_re() -> &'static Regex {
 
 fn js_interface_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*(export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+    cached_regex(
+        &RE,
+        r"^\s*(export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+    )
 }
 
 fn js_type_re() -> &'static Regex {
@@ -340,7 +567,10 @@ fn js_type_re() -> &'static Regex {
 
 fn js_const_fn_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(async\s*)?\([^)]*\)\s*=>")
+    cached_regex(
+        &RE,
+        r"^\s*(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(async\s*)?\([^)]*\)\s*=>",
+    )
 }
 
 fn js_import_re() -> &'static Regex {
@@ -360,22 +590,34 @@ fn js_export_re() -> &'static Regex {
 
 fn rust_fn_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?(async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)")
+    cached_regex(
+        &RE,
+        r"^\s*(pub(\([^)]*\))?\s+)?(async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)",
+    )
 }
 
 fn rust_struct_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)")
+    cached_regex(
+        &RE,
+        r"^\s*(pub(\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)",
+    )
 }
 
 fn rust_enum_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)")
+    cached_regex(
+        &RE,
+        r"^\s*(pub(\([^)]*\))?\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)",
+    )
 }
 
 fn rust_trait_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)")
+    cached_regex(
+        &RE,
+        r"^\s*(pub(\([^)]*\))?\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)",
+    )
 }
 
 fn rust_use_re() -> &'static Regex {
@@ -440,13 +682,12 @@ export const refresh = () => {};
 
     #[test]
     fn extracts_rust_symbols_and_imports() {
-        let source = r#"
-use std::path::Path;
-pub struct GraphStore {}
-pub enum EdgeKind {}
-pub trait Analyzer {}
-pub fn scan_current() {}
-"#;
+        let source = "\
+use std::path::Path;\n\
+pub struct GraphStore {}\n\
+pub enum EdgeKind {}\n\
+pub trait Analyzer {}\n\
+pub fn scan_current() {}\n";
         let symbols = extract_rust_symbols("src/lib.rs", source);
         let imports = extract_rust_imports("src/lib.rs", source);
 

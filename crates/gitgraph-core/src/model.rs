@@ -26,6 +26,8 @@ pub struct FileRecord {
     pub current_hash: String,
     pub size_bytes: u64,
     pub is_current: bool,
+    #[serde(default)]
+    pub parser_kind: ParserKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,14 @@ pub struct SymbolRecord {
     pub start_line: usize,
     pub end_line: usize,
     pub body_hash: String,
+    #[serde(default)]
+    pub parser_kind: ParserKind,
+    #[serde(default)]
+    pub symbol_path: String,
+    #[serde(default)]
+    pub container_symbol: Option<String>,
+    #[serde(default)]
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +70,12 @@ pub struct CommitRecord {
     pub timestamp: i64,
     pub message: String,
     pub parent_count: usize,
+    #[serde(default)]
+    pub parent_hashes: Vec<String>,
+    #[serde(default)]
+    pub order: usize,
+    #[serde(default)]
+    pub changed_file_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +91,7 @@ pub struct FileChangeRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanSnapshot {
     pub repo: RepoRecord,
+    pub summary: ScanSummary,
     pub files: Vec<FileRecord>,
     pub symbols: Vec<SymbolRecord>,
     pub imports: Vec<ImportRecord>,
@@ -82,6 +99,7 @@ pub struct ScanSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistorySnapshot {
+    pub summary: HistorySummary,
     pub commits: Vec<CommitRecord>,
     pub file_changes: Vec<FileChangeRecord>,
 }
@@ -93,6 +111,42 @@ pub struct QueryHit {
     pub label: String,
     pub path: Option<String>,
     pub score: f64,
+    #[serde(default)]
+    pub related_symbols: Vec<String>,
+    #[serde(default)]
+    pub direct_imports: Vec<String>,
+    #[serde(default)]
+    pub recent_commits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSummary {
+    pub files_seen: usize,
+    pub files_scanned: usize,
+    pub files_reused: usize,
+    pub files_skipped: usize,
+    pub symbols: usize,
+    pub imports: usize,
+    pub languages_seen: Vec<String>,
+    pub largest_files_skipped: Vec<SkippedFile>,
+    pub parser_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkippedFile {
+    pub path: String,
+    pub size_bytes: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistorySummary {
+    pub commits: usize,
+    pub file_changes: usize,
+    pub renames: usize,
+    pub copies: usize,
+    pub max_commits: usize,
+    pub since: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +184,20 @@ pub enum SymbolKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ParserKind {
+    TreeSitter,
+    RegexFallback,
+    Unknown,
+}
+
+impl Default for ParserKind {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChangeStatus {
     Added,
     Modified,
@@ -149,7 +217,11 @@ pub struct Confidence {
 
 impl Language {
     pub fn from_path(path: &Path) -> Self {
-        match path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+        match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+        {
             "py" => Self::Python,
             "js" | "jsx" | "mjs" | "cjs" => Self::JavaScript,
             "ts" | "tsx" => Self::TypeScript,

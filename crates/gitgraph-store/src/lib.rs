@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use gitgraph_core::{
-    stable_hash, CommitRecord, FileChangeRecord, FileRecord, GitGraphConfig, GraphPaths, HistorySnapshot,
-    ImportRecord, QueryHit, RepoRecord, ScanSnapshot, SymbolRecord,
+    stable_hash, CommitRecord, FileChangeRecord, FileRecord, GitGraphConfig, GraphPaths,
+    HistorySnapshot, ImportRecord, QueryHit, RepoRecord, ScanSnapshot, SymbolRecord,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
@@ -25,6 +25,17 @@ pub struct StoreStatus {
     pub imports: usize,
     pub commits: usize,
     pub file_changes: usize,
+    pub metadata_present: bool,
+    pub schema_version: Option<u32>,
+    pub last_scan_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphMetadata {
+    pub schema_version: u32,
+    pub last_scan_at: DateTime<Utc>,
+    pub parser_version: String,
+    pub config_hash: String,
 }
 
 impl GraphStore {
@@ -66,17 +77,33 @@ impl GraphStore {
 
     pub fn save_current_scan(&self, snapshot: &ScanSnapshot) -> Result<()> {
         self.init()?;
-        write_jsonl(self.paths.graph_db.join("current_files.jsonl"), &snapshot.files)?;
-        write_jsonl(self.paths.graph_db.join("current_symbols.jsonl"), &snapshot.symbols)?;
-        write_jsonl(self.paths.graph_db.join("current_imports.jsonl"), &snapshot.imports)?;
-        write_jsonl(self.paths.graph_db.join("repo.jsonl"), std::slice::from_ref(&snapshot.repo))?;
+        write_jsonl(
+            self.paths.graph_db.join("current_files.jsonl"),
+            &snapshot.files,
+        )?;
+        write_jsonl(
+            self.paths.graph_db.join("current_symbols.jsonl"),
+            &snapshot.symbols,
+        )?;
+        write_jsonl(
+            self.paths.graph_db.join("current_imports.jsonl"),
+            &snapshot.imports,
+        )?;
+        write_jsonl(
+            self.paths.graph_db.join("repo.jsonl"),
+            std::slice::from_ref(&snapshot.repo),
+        )?;
+        self.write_metadata(&snapshot.summary.parser_version)?;
         Ok(())
     }
 
     pub fn save_history(&self, history: &HistorySnapshot) -> Result<()> {
         self.init()?;
         write_jsonl(self.paths.graph_db.join("commits.jsonl"), &history.commits)?;
-        write_jsonl(self.paths.graph_db.join("file_changes.jsonl"), &history.file_changes)?;
+        write_jsonl(
+            self.paths.graph_db.join("file_changes.jsonl"),
+            &history.file_changes,
+        )?;
         Ok(())
     }
 
@@ -95,6 +122,9 @@ impl GraphStore {
             imports: count_jsonl(self.paths.graph_db.join("current_imports.jsonl"))?,
             commits: count_jsonl(self.paths.graph_db.join("commits.jsonl"))?,
             file_changes: count_jsonl(self.paths.graph_db.join("file_changes.jsonl"))?,
+            metadata_present: self.metadata_path().exists(),
+            schema_version: self.metadata().ok().map(|metadata| metadata.schema_version),
+            last_scan_at: self.metadata().ok().map(|metadata| metadata.last_scan_at),
         })
     }
 
@@ -118,33 +148,51 @@ impl GraphStore {
         read_jsonl(self.paths.graph_db.join("file_changes.jsonl"))
     }
 
+    pub fn metadata(&self) -> Result<GraphMetadata> {
+        let path = self.metadata_path();
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        serde_json::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))
+    }
+
     pub fn query(&self, query: &str, limit: usize) -> Result<Vec<QueryHit>> {
         let q = query.to_lowercase();
         let mut hits = Vec::new();
+        let files = self.files()?;
+        let symbols = self.symbols()?;
+        let imports = self.imports()?;
+        let changes = self.file_changes()?;
 
-        for file in self.files()? {
+        for file in files {
             let hay = file.path.to_lowercase();
-            if hay.contains(&q) {
+            if hay.contains(&q) || path_segments(&hay).any(|segment| segment.contains(&q)) {
                 hits.push(QueryHit {
                     kind: "file".to_string(),
                     id: file.id,
                     label: file.path.clone(),
                     path: Some(file.path),
-                    score: score(&hay, &q),
+                    score: file_score(&hay, &q),
+                    related_symbols: related_symbols(&symbols, &hay),
+                    direct_imports: direct_imports(&imports, &hay),
+                    recent_commits: recent_commits(&changes, &hay),
                 });
             }
         }
 
-        for symbol in self.symbols()? {
-            let hay = format!("{} {} {}", symbol.name, symbol.signature, symbol.file_path).to_lowercase();
+        for symbol in symbols.iter() {
+            let hay =
+                format!("{} {} {}", symbol.name, symbol.signature, symbol.file_path).to_lowercase();
             if hay.contains(&q) {
                 let label = format!("{} {}", symbol.kind_label(), symbol.name);
                 hits.push(QueryHit {
                     kind: "symbol".to_string(),
-                    id: symbol.id,
+                    id: symbol.id.clone(),
                     label,
-                    path: Some(symbol.file_path),
-                    score: score(&hay, &q),
+                    path: Some(symbol.file_path.clone()),
+                    score: symbol_score(symbol, &q),
+                    related_symbols: related_symbols(&symbols, &symbol.file_path),
+                    direct_imports: direct_imports(&imports, &symbol.file_path),
+                    recent_commits: recent_commits(&changes, &symbol.file_path),
                 });
             }
         }
@@ -152,6 +200,29 @@ impl GraphStore {
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         hits.truncate(limit);
         Ok(hits)
+    }
+
+    fn metadata_path(&self) -> std::path::PathBuf {
+        self.paths.graph_db.join("metadata.json")
+    }
+
+    fn write_metadata(&self, parser_version: &str) -> Result<()> {
+        let config_text = if self.paths.config.exists() {
+            fs::read_to_string(&self.paths.config)?
+        } else {
+            String::new()
+        };
+        let metadata = GraphMetadata {
+            schema_version: 2,
+            last_scan_at: Utc::now(),
+            parser_version: parser_version.to_string(),
+            config_hash: stable_hash(config_text),
+        };
+        fs::write(
+            self.metadata_path(),
+            serde_json::to_string_pretty(&metadata)?,
+        )?;
+        Ok(())
     }
 }
 
@@ -175,14 +246,65 @@ impl SymbolKindLabel for SymbolRecord {
     }
 }
 
-fn score(haystack: &str, query: &str) -> f64 {
-    if haystack == query {
+fn file_score(path: &str, query: &str) -> f64 {
+    if path == query {
         1.0
-    } else if haystack.starts_with(query) {
+    } else if path_segments(path).any(|segment| segment == query) {
+        0.95
+    } else if path_segments(path).any(|segment| segment.starts_with(query)) {
         0.9
+    } else if path.contains(query) {
+        0.65
     } else {
-        0.5
+        0.0
     }
+}
+
+fn symbol_score(symbol: &SymbolRecord, query: &str) -> f64 {
+    let name = symbol.name.to_lowercase();
+    let path = symbol.file_path.to_lowercase();
+    if name == query {
+        1.0
+    } else if name.starts_with(query) {
+        0.92
+    } else if path_segments(&path).any(|segment| segment == query) {
+        0.82
+    } else if name.contains(query) {
+        0.7
+    } else {
+        0.45
+    }
+}
+
+fn path_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split(['/', '\\', '.', '-'])
+}
+
+fn related_symbols(symbols: &[SymbolRecord], path: &str) -> Vec<String> {
+    symbols
+        .iter()
+        .filter(|symbol| symbol.file_path.eq_ignore_ascii_case(path))
+        .take(5)
+        .map(|symbol| symbol.name.clone())
+        .collect()
+}
+
+fn direct_imports(imports: &[ImportRecord], path: &str) -> Vec<String> {
+    imports
+        .iter()
+        .filter(|import| import.file_path.eq_ignore_ascii_case(path))
+        .take(5)
+        .map(|import| import.module.clone())
+        .collect()
+}
+
+fn recent_commits(changes: &[FileChangeRecord], path: &str) -> Vec<String> {
+    changes
+        .iter()
+        .filter(|change| change.path.eq_ignore_ascii_case(path))
+        .take(5)
+        .map(|change| change.commit_hash.chars().take(12).collect())
+        .collect()
 }
 
 fn write_jsonl<T: Serialize>(path: impl AsRef<Path>, rows: &[T]) -> Result<()> {
@@ -208,7 +330,9 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Result<
     for line in BufReader::new(file).lines() {
         let line = line?;
         if !line.trim().is_empty() {
-            rows.push(serde_json::from_str(&line)?);
+            rows.push(serde_json::from_str(&line).with_context(|| {
+                format!("failed to parse JSONL row in {}", path.as_ref().display())
+            })?);
         }
     }
     Ok(rows)
@@ -225,10 +349,10 @@ fn count_jsonl(path: impl AsRef<Path>) -> Result<usize> {
 pub fn kuzu_schema() -> &'static str {
     r#"CREATE NODE TABLE Repo(id STRING, root_path STRING, name STRING, created_at STRING, PRIMARY KEY(id));
 CREATE NODE TABLE Commit(hash STRING, author STRING, email STRING, timestamp INT64, message STRING, parent_count INT64, PRIMARY KEY(hash));
-CREATE NODE TABLE File(id STRING, path STRING, language STRING, blob_hash STRING, current_hash STRING, size_bytes INT64, is_current BOOLEAN, PRIMARY KEY(id));
+CREATE NODE TABLE File(id STRING, path STRING, language STRING, blob_hash STRING, current_hash STRING, size_bytes INT64, is_current BOOLEAN, parser_kind STRING, PRIMARY KEY(id));
 CREATE NODE TABLE Directory(id STRING, path STRING, PRIMARY KEY(id));
 CREATE NODE TABLE Package(id STRING, name STRING, ecosystem STRING, PRIMARY KEY(id));
-CREATE NODE TABLE Symbol(id STRING, stable_id STRING, name STRING, kind STRING, language STRING, signature STRING, file_path STRING, start_line INT64, end_line INT64, body_hash STRING, PRIMARY KEY(id));
+CREATE NODE TABLE Symbol(id STRING, stable_id STRING, name STRING, kind STRING, language STRING, signature STRING, file_path STRING, start_line INT64, end_line INT64, body_hash STRING, parser_kind STRING, symbol_path STRING, container_symbol STRING, doc_comment STRING, PRIMARY KEY(id));
 CREATE NODE TABLE Import(id STRING, source_text STRING, module STRING, resolved_path STRING, confidence DOUBLE, PRIMARY KEY(id));
 CREATE NODE TABLE TypeRef(id STRING, name STRING, resolved_symbol_id STRING, confidence DOUBLE, PRIMARY KEY(id));
 CREATE NODE TABLE Community(id STRING, algorithm STRING, resolution DOUBLE, level INT64, quality DOUBLE, label STRING, created_at STRING, PRIMARY KEY(id));

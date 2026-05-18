@@ -27,7 +27,11 @@ pub struct ReachablePath {
     pub nodes: Vec<String>,
 }
 
-pub fn dead_code_candidates(symbols: &[SymbolRecord], imports: &[ImportRecord], min_confidence: f64) -> Vec<DeadCodeCandidate> {
+pub fn dead_code_candidates(
+    symbols: &[SymbolRecord],
+    imports: &[ImportRecord],
+    min_confidence: f64,
+) -> Vec<DeadCodeCandidate> {
     let imported_text: String = imports
         .iter()
         .map(|imp| format!("{} {}", imp.source_text, imp.module))
@@ -43,7 +47,9 @@ pub fn dead_code_candidates(symbols: &[SymbolRecord], imports: &[ImportRecord], 
                 || symbol.name.starts_with("test_")
                 || symbol.file_path.contains("/test")
                 || symbol.file_path.contains("route")
-                || symbol.file_path.contains("api");
+                || symbol.file_path.contains("api")
+                || symbol.signature.trim_start().starts_with("pub ")
+                || symbol.signature.trim_start().starts_with("export ");
             if entrypoint || imported_text.contains(&name) {
                 return None;
             }
@@ -70,7 +76,10 @@ pub fn communities(imports: &[ImportRecord]) -> Vec<CommunityRecord> {
             .trim_start_matches('.')
             .to_string();
         if !label.is_empty() {
-            groups.entry(label).or_default().insert(import.file_path.clone());
+            groups
+                .entry(label)
+                .or_default()
+                .insert(import.file_path.clone());
         }
     }
     groups
@@ -85,7 +94,12 @@ pub fn communities(imports: &[ImportRecord]) -> Vec<CommunityRecord> {
         .collect()
 }
 
-pub fn reachable_path(imports: &[ImportRecord], from: &str, to: &str, max_depth: usize) -> Result<Option<ReachablePath>> {
+pub fn reachable_path(
+    imports: &[ImportRecord],
+    from: &str,
+    to: &str,
+    max_depth: usize,
+) -> Result<Option<ReachablePath>> {
     let mut graph = DiGraphMap::<&str, ()>::new();
     for import in imports {
         graph.add_edge(import.file_path.as_str(), import.module.as_str(), ());
@@ -113,7 +127,7 @@ pub fn reachable_path(imports: &[ImportRecord], from: &str, to: &str, max_depth:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gitgraph_core::{Language, SymbolKind};
+    use gitgraph_core::{Language, ParserKind, SymbolKind};
 
     #[test]
     fn dead_code_skips_entrypoints() {
@@ -129,6 +143,10 @@ mod tests {
                 start_line: 1,
                 end_line: 1,
                 body_hash: "a".to_string(),
+                parser_kind: ParserKind::RegexFallback,
+                symbol_path: "main".to_string(),
+                container_symbol: None,
+                doc_comment: None,
             },
             SymbolRecord {
                 id: "2".to_string(),
@@ -141,6 +159,10 @@ mod tests {
                 start_line: 2,
                 end_line: 2,
                 body_hash: "b".to_string(),
+                parser_kind: ParserKind::RegexFallback,
+                symbol_path: "unused".to_string(),
+                container_symbol: None,
+                doc_comment: None,
             },
         ];
 

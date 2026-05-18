@@ -19,8 +19,15 @@ pub fn serve_stdio(repo_root: &Path) -> Result<()> {
         }
         let request: Value = serde_json::from_str(&line)?;
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
-        let result = handle_method(&store, method, request.get("params").cloned().unwrap_or(Value::Null))?;
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let result = handle_method(
+            &store,
+            method,
+            request.get("params").cloned().unwrap_or(Value::Null),
+        )?;
         let response = json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -53,7 +60,10 @@ fn handle_method(store: &GraphStore, method: &str, params: Value) -> Result<Valu
 }
 
 fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
-    let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     let response = match name {
         "repo_status" => {
@@ -84,7 +94,11 @@ fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
                 .map(serde_json::to_value)
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             McpResponse {
-                answer: format!("Found {} symbols and {} imports in {path}.", symbols.len(), imports.len()),
+                answer: format!(
+                    "Found {} symbols and {} imports in {path}.",
+                    symbols.len(),
+                    imports.len()
+                ),
                 confidence: 0.9,
                 nodes: symbols,
                 edges: imports,
@@ -92,7 +106,10 @@ fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
             }
         }
         "hybrid_search" => {
-            let query = args.get("query").and_then(Value::as_str).unwrap_or_default();
+            let query = args
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
             let hits: Vec<_> = store
                 .query(query, limit)?
@@ -108,8 +125,12 @@ fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
             }
         }
         "dead_code_candidates" => {
-            let min = args.get("confidence_min").and_then(Value::as_f64).unwrap_or(0.7);
-            let rows = gitgraph_analyze::dead_code_candidates(&store.symbols()?, &store.imports()?, min);
+            let min = args
+                .get("confidence_min")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.7);
+            let rows =
+                gitgraph_analyze::dead_code_candidates(&store.symbols()?, &store.imports()?, min);
             McpResponse {
                 answer: format!("Found {} dead-code candidates.", rows.len()),
                 confidence: 0.72,
