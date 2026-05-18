@@ -276,7 +276,12 @@ fn scan_current(format: &OutputFormat, repo: &PathBuf) -> Result<()> {
     let previous_parser_matches = store
         .metadata()
         .is_ok_and(|metadata| metadata.parser_version == gitgraph_parse::PARSER_VERSION);
-    let previous = match (previous_parser_matches, store.files(), store.symbols(), store.imports()) {
+    let previous = match (
+        previous_parser_matches,
+        store.files(),
+        store.symbols(),
+        store.imports(),
+    ) {
         (true, Ok(files), Ok(symbols), Ok(imports)) => Some(PreviousScan {
             files,
             symbols,
