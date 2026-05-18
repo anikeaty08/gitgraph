@@ -117,6 +117,19 @@ pub struct QueryHit {
     pub direct_imports: Vec<String>,
     #[serde(default)]
     pub recent_commits: Vec<String>,
+    #[serde(default)]
+    pub embedding_score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingRecord {
+    pub id: String,
+    pub owner_type: String,
+    pub owner_id: String,
+    pub label: String,
+    pub model: String,
+    pub vector: Vec<f32>,
+    pub text_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

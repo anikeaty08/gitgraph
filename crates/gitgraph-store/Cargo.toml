@@ -9,6 +9,10 @@ version.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 gitgraph-core = { path = "../gitgraph-core" }
+kuzu = { version = "0.11", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 
+[features]
+default = []
+kuzu-native = ["dep:kuzu"]

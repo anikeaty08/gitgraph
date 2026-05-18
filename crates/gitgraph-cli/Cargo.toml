@@ -22,3 +22,11 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[features]
+default = []
+tree-sitter = ["gitgraph-parse/tree-sitter"]
+embeddings = []
+leiden = ["gitgraph-analyze/leiden"]
+kuzu-native = ["gitgraph-store/kuzu-native"]
+native = ["tree-sitter", "embeddings", "leiden"]

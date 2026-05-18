@@ -12,4 +12,16 @@ ignore.workspace = true
 rayon.workspace = true
 regex.workspace = true
 serde.workspace = true
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
 
+[features]
+default = []
+tree-sitter = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-typescript",
+]

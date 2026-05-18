@@ -8,6 +8,10 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 gitgraph-core = { path = "../gitgraph-core" }
+leiden-rs = { version = "0.8", optional = true }
 petgraph.workspace = true
 serde.workspace = true
 
+[features]
+default = []
+leiden = ["dep:leiden-rs"]

@@ -4,11 +4,41 @@ use std::{fs, path::Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitGraphConfig {
+    #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
+    pub parser: ParserConfig,
     pub scan: ScanConfig,
     pub history: HistoryConfig,
     pub analysis: AnalysisConfig,
     pub mcp: McpConfig,
     pub embeddings: EmbeddingsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    pub backend: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParserConfig {
+    pub prefer_tree_sitter: bool,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            backend: "jsonl".to_string(),
+        }
+    }
+}
+
+impl Default for ParserConfig {
+    fn default() -> Self {
+        Self {
+            prefer_tree_sitter: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +78,8 @@ pub struct EmbeddingsConfig {
 impl Default for GitGraphConfig {
     fn default() -> Self {
         Self {
+            storage: StorageConfig::default(),
+            parser: ParserConfig::default(),
             scan: ScanConfig {
                 languages: vec![
                     "python".to_string(),

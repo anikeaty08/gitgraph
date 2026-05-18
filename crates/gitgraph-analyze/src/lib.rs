@@ -1,5 +1,5 @@
 use anyhow::Result;
-use gitgraph_core::{ImportRecord, SymbolRecord};
+use gitgraph_core::{stable_hash, EmbeddingRecord, ImportRecord, SymbolRecord};
 use petgraph::{graphmap::DiGraphMap, visit::Bfs};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +19,7 @@ pub struct CommunityRecord {
     pub label: String,
     pub members: Vec<String>,
     pub quality: f64,
+    pub algorithm: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +91,44 @@ pub fn communities(imports: &[ImportRecord]) -> Vec<CommunityRecord> {
             label,
             quality: members.len() as f64,
             members: members.into_iter().collect(),
+            algorithm: community_algorithm().to_string(),
+        })
+        .collect()
+}
+
+pub fn build_embeddings(symbols: &[SymbolRecord], model: &str) -> Vec<EmbeddingRecord> {
+    symbols
+        .iter()
+        .map(|symbol| {
+            let text = format!("{} {} {}", symbol.name, symbol.signature, symbol.file_path);
+            EmbeddingRecord {
+                id: stable_hash(format!("embedding:symbol:{}", symbol.id)),
+                owner_type: "symbol".to_string(),
+                owner_id: symbol.id.clone(),
+                label: symbol.name.clone(),
+                model: model.to_string(),
+                vector: deterministic_test_vector(&text, 16),
+                text_hash: stable_hash(text),
+            }
+        })
+        .collect()
+}
+
+pub fn community_algorithm() -> &'static str {
+    if cfg!(feature = "leiden") {
+        "leiden"
+    } else {
+        "import-prefix-groups"
+    }
+}
+
+pub fn deterministic_test_vector(text: &str, dims: usize) -> Vec<f32> {
+    let hash = stable_hash(text);
+    (0..dims)
+        .map(|idx| {
+            let start = (idx * 2) % hash.len();
+            let byte = u8::from_str_radix(&hash[start..start + 2], 16).unwrap_or(0);
+            (byte as f32 / 255.0) - 0.5
         })
         .collect()
 }

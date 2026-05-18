@@ -12,7 +12,7 @@ use std::{
     sync::OnceLock,
 };
 
-pub const PARSER_VERSION: &str = "regex-fallback-3";
+pub const PARSER_VERSION: &str = "regex-fallback-4";
 
 #[derive(Debug, Clone)]
 pub struct CurrentScanOptions {
@@ -268,20 +268,12 @@ fn extract_symbols(path: &str, language: Language, source: &str) -> Vec<SymbolRe
 
 fn extract_python_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
     let mut symbols = Vec::new();
+    let mut class_stack: Vec<(String, usize)> = Vec::new();
     for (idx, line) in source.lines().enumerate() {
         let line_no = idx + 1;
-        if let Some(cap) = py_def_re().captures(line) {
-            let name = cap[1].to_string();
-            symbols.push(symbol(
-                path,
-                Language::Python,
-                SymbolKind::Function,
-                &name,
-                line.trim(),
-                line_no,
-                line,
-            ));
-        } else if let Some(cap) = py_class_re().captures(line) {
+        let indent = leading_spaces(line);
+        class_stack.retain(|(_, class_indent)| indent > *class_indent || line.trim().is_empty());
+        if let Some(cap) = py_class_re().captures(line) {
             let name = cap[1].to_string();
             symbols.push(symbol(
                 path,
@@ -292,6 +284,27 @@ fn extract_python_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
                 line_no,
                 line,
             ));
+            class_stack.push((name, indent));
+        } else if let Some(cap) = py_def_re().captures(line) {
+            let name = cap[2].to_string();
+            let container = class_stack
+                .last()
+                .map(|(class_name, _)| class_name.as_str());
+            let kind = if container.is_some() {
+                SymbolKind::Method
+            } else {
+                SymbolKind::Function
+            };
+            symbols.push(symbol_with_container(
+                path,
+                Language::Python,
+                kind,
+                &name,
+                line.trim(),
+                line_no,
+                line,
+                container,
+            ));
         }
     }
     symbols
@@ -299,6 +312,8 @@ fn extract_python_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
 
 fn extract_js_ts_symbols(path: &str, language: Language, source: &str) -> Vec<SymbolRecord> {
     let mut symbols = Vec::new();
+    let mut current_class: Option<(String, i32)> = None;
+    let mut brace_depth = 0_i32;
     for (idx, line) in source.lines().enumerate() {
         let line_no = idx + 1;
         if let Some(cap) = js_function_re().captures(line) {
@@ -323,6 +338,7 @@ fn extract_js_ts_symbols(path: &str, language: Language, source: &str) -> Vec<Sy
                 line_no,
                 line,
             ));
+            current_class = Some((name, brace_depth));
         } else if let Some(cap) = js_interface_re().captures(line) {
             let name = cap[2].to_string();
             symbols.push(symbol(
@@ -356,6 +372,35 @@ fn extract_js_ts_symbols(path: &str, language: Language, source: &str) -> Vec<Sy
                 line_no,
                 line,
             ));
+        } else if let Some((class_name, class_depth)) = current_class.as_ref() {
+            if brace_depth > *class_depth {
+                if let Some(cap) = js_method_re().captures(line) {
+                    let name = cap[2].to_string();
+                    if !matches!(
+                        name.as_str(),
+                        "if" | "for" | "while" | "switch" | "catch" | "function"
+                    ) {
+                        symbols.push(symbol_with_container(
+                            path,
+                            language,
+                            SymbolKind::Method,
+                            &name,
+                            line.trim(),
+                            line_no,
+                            line,
+                            Some(class_name),
+                        ));
+                    }
+                }
+            }
+        }
+        brace_depth += line.matches('{').count() as i32;
+        brace_depth -= line.matches('}').count() as i32;
+        if current_class
+            .as_ref()
+            .is_some_and(|(_, class_depth)| brace_depth <= *class_depth)
+        {
+            current_class = None;
         }
     }
     symbols
@@ -427,7 +472,23 @@ fn symbol(
     line_no: usize,
     body: &str,
 ) -> SymbolRecord {
+    symbol_with_container(path, language, kind, name, signature, line_no, body, None)
+}
+
+fn symbol_with_container(
+    path: &str,
+    language: Language,
+    kind: SymbolKind,
+    name: &str,
+    signature: &str,
+    line_no: usize,
+    body: &str,
+    container: Option<&str>,
+) -> SymbolRecord {
     let stable_id = format!("{path}:{name}:{line_no}");
+    let symbol_path = container
+        .map(|container| format!("{container}.{name}"))
+        .unwrap_or_else(|| name.to_string());
     SymbolRecord {
         id: stable_hash(format!("symbol:{stable_id}")),
         stable_id,
@@ -440,10 +501,16 @@ fn symbol(
         end_line: line_no,
         body_hash: stable_hash(body),
         parser_kind: ParserKind::RegexFallback,
-        symbol_path: name.to_string(),
-        container_symbol: None,
+        symbol_path,
+        container_symbol: container.map(str::to_string),
         doc_comment: None,
     }
+}
+
+fn leading_spaces(line: &str) -> usize {
+    line.chars()
+        .take_while(|ch| *ch == ' ' || *ch == '\t')
+        .count()
 }
 
 fn extract_imports(path: &str, language: Language, source: &str) -> Vec<ImportRecord> {
@@ -521,7 +588,10 @@ fn cached_regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex
 
 fn py_def_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    cached_regex(&RE, r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
+    cached_regex(
+        &RE,
+        r"^\s*(async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)",
+    )
 }
 
 fn py_class_re() -> &'static Regex {
@@ -570,6 +640,14 @@ fn js_const_fn_re() -> &'static Regex {
     cached_regex(
         &RE,
         r"^\s*(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(async\s*)?\([^)]*\)\s*=>",
+    )
+}
+
+fn js_method_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(
+        &RE,
+        r"^\s*(async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{",
     )
 }
 

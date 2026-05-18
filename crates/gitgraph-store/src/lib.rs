@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use gitgraph_core::{
-    stable_hash, CommitRecord, FileChangeRecord, FileRecord, GitGraphConfig, GraphPaths,
-    HistorySnapshot, ImportRecord, QueryHit, RepoRecord, ScanSnapshot, SymbolRecord,
+    stable_hash, CommitRecord, EmbeddingRecord, FileChangeRecord, FileRecord, GitGraphConfig,
+    GraphPaths, HistorySnapshot, ImportRecord, QueryHit, RepoRecord, ScanSnapshot, SymbolRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -25,6 +25,10 @@ pub struct StoreStatus {
     pub imports: usize,
     pub commits: usize,
     pub file_changes: usize,
+    pub embeddings: usize,
+    pub communities: usize,
+    pub storage_backend: String,
+    pub kuzu_native_available: bool,
     pub metadata_present: bool,
     pub schema_version: Option<u32>,
     pub last_scan_at: Option<DateTime<Utc>>,
@@ -36,6 +40,45 @@ pub struct GraphMetadata {
     pub last_scan_at: DateTime<Utc>,
     pub parser_version: String,
     pub config_hash: String,
+    #[serde(default = "default_storage_backend")]
+    pub storage_backend: String,
+}
+
+fn default_storage_backend() -> String {
+    "jsonl".to_string()
+}
+
+pub trait GraphStoreBackend {
+    fn backend_name(&self) -> &'static str;
+    fn native_available(&self) -> bool;
+}
+
+#[derive(Debug, Clone)]
+pub struct JsonlStore;
+
+impl GraphStoreBackend for JsonlStore {
+    fn backend_name(&self) -> &'static str {
+        "jsonl"
+    }
+
+    fn native_available(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "kuzu-native")]
+#[derive(Debug, Clone)]
+pub struct KuzuStore;
+
+#[cfg(feature = "kuzu-native")]
+impl GraphStoreBackend for KuzuStore {
+    fn backend_name(&self) -> &'static str {
+        "kuzu"
+    }
+
+    fn native_available(&self) -> bool {
+        true
+    }
 }
 
 impl GraphStore {
@@ -122,6 +165,13 @@ impl GraphStore {
             imports: count_jsonl(self.paths.graph_db.join("current_imports.jsonl"))?,
             commits: count_jsonl(self.paths.graph_db.join("commits.jsonl"))?,
             file_changes: count_jsonl(self.paths.graph_db.join("file_changes.jsonl"))?,
+            embeddings: count_jsonl(self.paths.graph_db.join("embeddings.jsonl"))?,
+            communities: count_jsonl(self.paths.graph_db.join("analysis_communities.jsonl"))?,
+            storage_backend: self
+                .config()
+                .map(|config| config.storage.backend)
+                .unwrap_or_else(|_| "jsonl".to_string()),
+            kuzu_native_available: cfg!(feature = "kuzu-native"),
             metadata_present: self.metadata_path().exists(),
             schema_version: self.metadata().ok().map(|metadata| metadata.schema_version),
             last_scan_at: self.metadata().ok().map(|metadata| metadata.last_scan_at),
@@ -146,6 +196,15 @@ impl GraphStore {
 
     pub fn file_changes(&self) -> Result<Vec<FileChangeRecord>> {
         read_jsonl(self.paths.graph_db.join("file_changes.jsonl"))
+    }
+
+    pub fn embeddings(&self) -> Result<Vec<EmbeddingRecord>> {
+        read_jsonl(self.paths.graph_db.join("embeddings.jsonl"))
+    }
+
+    pub fn save_embeddings(&self, embeddings: &[EmbeddingRecord]) -> Result<()> {
+        self.init()?;
+        write_jsonl(self.paths.graph_db.join("embeddings.jsonl"), embeddings)
     }
 
     pub fn metadata(&self) -> Result<GraphMetadata> {
@@ -175,6 +234,7 @@ impl GraphStore {
                     related_symbols: related_symbols(&symbols, &hay),
                     direct_imports: direct_imports(&imports, &hay),
                     recent_commits: recent_commits(&changes, &hay),
+                    embedding_score: None,
                 });
             }
         }
@@ -193,6 +253,7 @@ impl GraphStore {
                     related_symbols: related_symbols(&symbols, &symbol.file_path),
                     direct_imports: direct_imports(&imports, &symbol.file_path),
                     recent_commits: recent_commits(&changes, &symbol.file_path),
+                    embedding_score: None,
                 });
             }
         }
@@ -217,6 +278,10 @@ impl GraphStore {
             last_scan_at: Utc::now(),
             parser_version: parser_version.to_string(),
             config_hash: stable_hash(config_text),
+            storage_backend: self
+                .config()
+                .map(|config| config.storage.backend)
+                .unwrap_or_else(|_| "jsonl".to_string()),
         };
         fs::write(
             self.metadata_path(),

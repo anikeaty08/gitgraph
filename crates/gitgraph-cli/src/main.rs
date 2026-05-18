@@ -15,6 +15,8 @@ use std::path::PathBuf;
 struct Cli {
     #[arg(long, value_enum, global = true, default_value = "text")]
     format: OutputFormat,
+    #[arg(long, value_enum, global = true)]
+    store: Option<StoreBackendArg>,
     #[command(subcommand)]
     command: Command,
 }
@@ -23,6 +25,12 @@ struct Cli {
 enum OutputFormat {
     Text,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum StoreBackendArg {
+    Jsonl,
+    Kuzu,
 }
 
 #[derive(Debug, Subcommand)]
@@ -151,6 +159,7 @@ fn main() -> Result<()> {
 
 fn run(cli: Cli) -> Result<()> {
     let format = cli.format;
+    let _store_override = cli.store;
     match cli.command {
         Command::Init(arg) => {
             let store = GraphStore::open(&arg.repo)?;
@@ -175,7 +184,10 @@ fn run(cli: Cli) -> Result<()> {
                     "symbols": status.symbols,
                     "imports": status.imports,
                     "commits": status.commits,
-                    "file_changes": status.file_changes
+                    "file_changes": status.file_changes,
+                    "embeddings": status.embeddings,
+                    "communities": status.communities,
+                    "storage_backend": status.storage_backend.clone()
                 }),
                 warnings: status_warnings(&status),
                 confidence: if status.initialized { 1.0 } else { 0.4 },
@@ -208,10 +220,7 @@ fn run(cli: Cli) -> Result<()> {
                     &changes,
                 )
             }
-            AnalyzeCommand::Embeddings(_) => {
-                println!("embeddings are optional and disabled until a local embedding model is configured");
-                Ok(())
-            }
+            AnalyzeCommand::Embeddings(arg) => analyze_embeddings(&format, &arg.repo),
         },
         Command::Query { query, limit, repo } => {
             let store = GraphStore::open(&repo)?;
@@ -416,6 +425,48 @@ fn analyze_dead_code(format: &OutputFormat, repo: &PathBuf, confidence_min: f64)
     )
 }
 
+fn analyze_embeddings(format: &OutputFormat, repo: &PathBuf) -> Result<()> {
+    let store = GraphStore::open(repo)?;
+    let config = store.config()?;
+    let embeddings_enabled = config.embeddings.enabled;
+    let model = if embeddings_enabled && !config.embeddings.model.is_empty() {
+        config.embeddings.model.clone()
+    } else {
+        "deterministic-test-embedder".to_string()
+    };
+    let symbols = store.symbols()?;
+    let rows = gitgraph_analyze::build_embeddings(&symbols, &model);
+    store.save_embeddings(&rows)?;
+    let disabled_warning = (!embeddings_enabled).then(|| {
+        "embeddings.enabled is false; wrote deterministic test vectors, not semantic embeddings"
+            .to_string()
+    });
+    let summary = format!(
+        "Embedded {} symbols using {model} and stored vector rows.",
+        rows.len()
+    );
+    print(
+        format,
+        &summary,
+        &CommandEnvelope {
+            summary: summary.clone(),
+            counts: serde_json::json!({
+                "symbols_seen": symbols.len(),
+                "embeddings": rows.len(),
+                "embedding_dimensions": rows.first().map_or(0, |row| row.vector.len()),
+                "feature_active": cfg!(feature = "embeddings")
+            }),
+            warnings: disabled_warning.into_iter().collect(),
+            confidence: if cfg!(feature = "embeddings") {
+                0.72
+            } else {
+                0.45
+            },
+            data: &rows,
+        },
+    )
+}
+
 fn explain_file(format: &OutputFormat, repo: &PathBuf, path: &str) -> Result<()> {
     let store = GraphStore::open(repo)?;
     let path = normalize_input_path(repo, path);
@@ -600,8 +651,37 @@ fn doctor(format: &OutputFormat, repo: &PathBuf) -> Result<()> {
         DoctorCheck {
             name: "parser",
             ok: true,
-            detail: "regex fallback parser available; tree-sitter backend is not wired yet"
-                .to_string(),
+            detail: format!(
+                "regex fallback available; tree-sitter feature active: {}; prefer_tree_sitter is config-driven",
+                cfg!(feature = "tree-sitter")
+            ),
+        },
+        DoctorCheck {
+            name: "storage_backend",
+            ok: status.storage_backend == "jsonl"
+                || (status.storage_backend == "kuzu" && status.kuzu_native_available),
+            detail: format!(
+                "configured backend {}; kuzu-native feature active: {}",
+                status.storage_backend, status.kuzu_native_available
+            ),
+        },
+        DoctorCheck {
+            name: "embeddings",
+            ok: true,
+            detail: format!(
+                "{} vectors stored; embeddings feature active: {}",
+                status.embeddings,
+                cfg!(feature = "embeddings")
+            ),
+        },
+        DoctorCheck {
+            name: "leiden",
+            ok: true,
+            detail: format!(
+                "{} communities stored; leiden feature active: {}",
+                status.communities,
+                cfg!(feature = "leiden")
+            ),
         },
     ];
     let failed = checks.iter().filter(|check| !check.ok).count();
