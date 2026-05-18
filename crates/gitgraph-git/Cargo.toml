@@ -7,6 +7,4 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-git2.workspace = true
 gitgraph-core = { path = "../gitgraph-core" }
-

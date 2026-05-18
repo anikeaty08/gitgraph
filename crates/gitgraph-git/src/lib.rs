@@ -1,7 +1,9 @@
-use anyhow::{Context, Result};
-use git2::{Delta, DiffFindOptions, DiffOptions, Repository};
+use anyhow::{anyhow, Context, Result};
 use gitgraph_core::{ChangeStatus, CommitRecord, FileChangeRecord, HistorySnapshot};
-use std::path::Path;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct HistoryOptions {
@@ -9,113 +11,140 @@ pub struct HistoryOptions {
     pub since: Option<i64>,
 }
 
-pub fn discover_root(path: &Path) -> Result<std::path::PathBuf> {
-    let repo = Repository::discover(path).with_context(|| format!("not a git repo: {}", path.display()))?;
-    let workdir = repo
-        .workdir()
-        .context("bare repositories are not supported yet")?;
-    Ok(workdir.to_path_buf())
+pub fn discover_root(path: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .with_context(|| "failed to run git rev-parse")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "not a git repo: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let text = String::from_utf8(output.stdout)?;
+    Ok(PathBuf::from(text.trim()))
 }
 
 pub fn scan_history(repo_root: &Path, options: &HistoryOptions) -> Result<HistorySnapshot> {
-    let repo = Repository::discover(repo_root)
-        .with_context(|| format!("failed to open git repo at {}", repo_root.display()))?;
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
-    revwalk.set_sorting(git2::Sort::TIME)?;
-
-    let mut commits = Vec::new();
+    let commits = read_commits(repo_root, options)?;
     let mut file_changes = Vec::new();
-
-    for oid_result in revwalk {
-        if options.max_commits > 0 && commits.len() >= options.max_commits {
-            break;
-        }
-        let oid = oid_result?;
-        let commit = repo.find_commit(oid)?;
-        if let Some(since) = options.since {
-            if commit.time().seconds() < since {
-                continue;
-            }
-        }
-
-        let hash = oid.to_string();
-        commits.push(CommitRecord {
-            hash: hash.clone(),
-            author: commit.author().name().unwrap_or_default().to_string(),
-            email: commit.author().email().unwrap_or_default().to_string(),
-            timestamp: commit.time().seconds(),
-            message: commit.summary().unwrap_or_default().to_string(),
-            parent_count: commit.parent_count(),
-        });
-
-        let tree = commit.tree()?;
-        if commit.parent_count() == 0 {
-            let mut diff_options = DiffOptions::new();
-            diff_options.include_untracked(false);
-            let diff = repo.diff_tree_to_tree(None, Some(&tree), Some(&mut diff_options))?;
-            collect_file_changes(&hash, &diff, &mut file_changes)?;
-        } else {
-            for parent in commit.parents() {
-                let parent_tree = parent.tree()?;
-                let mut diff_options = DiffOptions::new();
-                let mut diff = repo.diff_tree_to_tree(
-                    Some(&parent_tree),
-                    Some(&tree),
-                    Some(&mut diff_options),
-                )?;
-                let mut find_options = DiffFindOptions::new();
-                find_options.renames(true).copies(true);
-                diff.find_similar(Some(&mut find_options))?;
-                collect_file_changes(&hash, &diff, &mut file_changes)?;
-            }
-        }
+    for commit in &commits {
+        file_changes.extend(read_file_changes(repo_root, &commit.hash)?);
     }
-
     Ok(HistorySnapshot {
         commits,
         file_changes,
     })
 }
 
-fn collect_file_changes(hash: &str, diff: &git2::Diff<'_>, out: &mut Vec<FileChangeRecord>) -> Result<()> {
-    diff.foreach(
-        &mut |delta, _| {
-            let new_path = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            let old_path = delta
-                .old_file()
-                .path()
-                .map(|p| p.to_string_lossy().replace('\\', "/"));
-            out.push(FileChangeRecord {
-                commit_hash: hash.to_string(),
-                path: new_path,
-                old_path,
-                status: map_status(delta.status()),
-                additions: 0,
-                deletions: 0,
-            });
-            true
-        },
-        None,
-        None,
-        None,
-    )?;
-    Ok(())
+fn read_commits(repo_root: &Path, options: &HistoryOptions) -> Result<Vec<CommitRecord>> {
+    let mut args = vec![
+        "log".to_string(),
+        "--date-order".to_string(),
+        "--format=%H%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s".to_string(),
+    ];
+    if options.max_commits > 0 {
+        args.push(format!("-n{}", options.max_commits));
+    }
+    if let Some(since) = options.since {
+        args.push(format!("--since=@{since}"));
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .with_context(|| "failed to run git log")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let text = String::from_utf8(output.stdout)?;
+    let mut commits = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.split('\x1f').collect();
+        if parts.len() < 6 {
+            continue;
+        }
+        let parents = parts[4]
+            .split_whitespace()
+            .filter(|parent| !parent.is_empty())
+            .count();
+        commits.push(CommitRecord {
+            hash: parts[0].to_string(),
+            author: parts[1].to_string(),
+            email: parts[2].to_string(),
+            timestamp: parts[3].parse().unwrap_or_default(),
+            message: parts[5].to_string(),
+            parent_count: parents,
+        });
+    }
+    Ok(commits)
 }
 
-fn map_status(delta: Delta) -> ChangeStatus {
-    match delta {
-        Delta::Added => ChangeStatus::Added,
-        Delta::Modified => ChangeStatus::Modified,
-        Delta::Deleted => ChangeStatus::Deleted,
-        Delta::Renamed => ChangeStatus::Renamed,
-        Delta::Copied => ChangeStatus::Copied,
-        Delta::Typechange => ChangeStatus::Typechange,
+fn read_file_changes(repo_root: &Path, hash: &str) -> Result<Vec<FileChangeRecord>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-M", "-C", hash])
+        .output()
+        .with_context(|| format!("failed to run git diff-tree for {hash}"))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git diff-tree failed for {hash}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let text = String::from_utf8(output.stdout)?;
+    let mut changes = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.is_empty() {
+            continue;
+        }
+        let status_text = fields[0];
+        let status = parse_status(status_text);
+        let (old_path, path) = if status_text.starts_with('R') || status_text.starts_with('C') {
+            (
+                fields.get(1).map(|value| normalize_path(value)),
+                fields.get(2).map(|value| normalize_path(value)).unwrap_or_default(),
+            )
+        } else {
+            (None, fields.get(1).map(|value| normalize_path(value)).unwrap_or_default())
+        };
+        changes.push(FileChangeRecord {
+            commit_hash: hash.to_string(),
+            path,
+            old_path,
+            status,
+            additions: 0,
+            deletions: 0,
+        });
+    }
+    Ok(changes)
+}
+
+fn parse_status(status: &str) -> ChangeStatus {
+    match status.chars().next() {
+        Some('A') => ChangeStatus::Added,
+        Some('M') => ChangeStatus::Modified,
+        Some('D') => ChangeStatus::Deleted,
+        Some('R') => ChangeStatus::Renamed,
+        Some('C') => ChangeStatus::Copied,
+        Some('T') => ChangeStatus::Typechange,
         _ => ChangeStatus::Unknown,
     }
 }
+
+fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
