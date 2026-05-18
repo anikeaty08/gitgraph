@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use git2::{Delta, DiffOptions, Repository};
+use git2::{Delta, DiffFindOptions, DiffOptions, Repository};
 use gitgraph_core::{ChangeStatus, CommitRecord, FileChangeRecord, HistorySnapshot};
 use std::path::Path;
 
@@ -58,13 +58,14 @@ pub fn scan_history(repo_root: &Path, options: &HistoryOptions) -> Result<Histor
         } else {
             for parent in commit.parents() {
                 let parent_tree = parent.tree()?;
-                let mut diff_options = DiffOptions::new();
-                diff_options.find_copies(true);
-                let diff = repo.diff_tree_to_tree(
+                let mut diff = repo.diff_tree_to_tree(
                     Some(&parent_tree),
                     Some(&tree),
-                    Some(&mut diff_options),
+                    Some(&mut DiffOptions::new()),
                 )?;
+                let mut find_options = DiffFindOptions::new();
+                find_options.renames(true).copies(true);
+                diff.find_similar(Some(&mut find_options))?;
                 collect_file_changes(&hash, &diff, &mut file_changes)?;
             }
         }
