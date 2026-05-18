@@ -9,6 +9,7 @@ use regex::Regex;
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 #[derive(Debug, Clone)]
@@ -162,15 +163,13 @@ fn extract_symbols(path: &str, language: Language, source: &str) -> Vec<SymbolRe
 }
 
 fn extract_python_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
-    let def_re = Regex::new(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)").unwrap();
-    let class_re = Regex::new(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\([^)]*\))?").unwrap();
     let mut symbols = Vec::new();
     for (idx, line) in source.lines().enumerate() {
         let line_no = idx + 1;
-        if let Some(cap) = def_re.captures(line) {
+        if let Some(cap) = py_def_re().captures(line) {
             let name = cap[1].to_string();
             symbols.push(symbol(path, Language::Python, SymbolKind::Function, &name, line.trim(), line_no, line));
-        } else if let Some(cap) = class_re.captures(line) {
+        } else if let Some(cap) = py_class_re().captures(line) {
             let name = cap[1].to_string();
             symbols.push(symbol(path, Language::Python, SymbolKind::Class, &name, line.trim(), line_no, line));
         }
@@ -179,27 +178,22 @@ fn extract_python_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
 }
 
 fn extract_js_ts_symbols(path: &str, language: Language, source: &str) -> Vec<SymbolRecord> {
-    let function_re = Regex::new(r"^\s*(export\s+)?(async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)").unwrap();
-    let class_re = Regex::new(r"^\s*(export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)").unwrap();
-    let interface_re = Regex::new(r"^\s*(export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)").unwrap();
-    let type_re = Regex::new(r"^\s*(export\s+)?type\s+([A-Za-z_$][A-Za-z0-9_$]*)").unwrap();
-    let const_fn_re = Regex::new(r"^\s*(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(async\s*)?\([^)]*\)\s*=>").unwrap();
     let mut symbols = Vec::new();
     for (idx, line) in source.lines().enumerate() {
         let line_no = idx + 1;
-        if let Some(cap) = function_re.captures(line) {
+        if let Some(cap) = js_function_re().captures(line) {
             let name = cap[3].to_string();
             symbols.push(symbol(path, language, SymbolKind::Function, &name, line.trim(), line_no, line));
-        } else if let Some(cap) = class_re.captures(line) {
+        } else if let Some(cap) = js_class_re().captures(line) {
             let name = cap[2].to_string();
             symbols.push(symbol(path, language, SymbolKind::Class, &name, line.trim(), line_no, line));
-        } else if let Some(cap) = interface_re.captures(line) {
+        } else if let Some(cap) = js_interface_re().captures(line) {
             let name = cap[2].to_string();
             symbols.push(symbol(path, language, SymbolKind::Interface, &name, line.trim(), line_no, line));
-        } else if let Some(cap) = type_re.captures(line) {
+        } else if let Some(cap) = js_type_re().captures(line) {
             let name = cap[2].to_string();
             symbols.push(symbol(path, language, SymbolKind::Type, &name, line.trim(), line_no, line));
-        } else if let Some(cap) = const_fn_re.captures(line) {
+        } else if let Some(cap) = js_const_fn_re().captures(line) {
             let name = cap[2].to_string();
             symbols.push(symbol(path, language, SymbolKind::Function, &name, line.trim(), line_no, line));
         }
@@ -240,15 +234,13 @@ fn extract_imports(path: &str, language: Language, source: &str) -> Vec<ImportRe
 }
 
 fn extract_python_imports(path: &str, source: &str) -> Vec<ImportRecord> {
-    let import_re = Regex::new(r"^\s*import\s+([A-Za-z0-9_.,\s]+)").unwrap();
-    let from_re = Regex::new(r"^\s*from\s+([A-Za-z0-9_\.]+)\s+import\s+").unwrap();
     let mut imports = Vec::new();
     for (idx, line) in source.lines().enumerate() {
-        if let Some(cap) = import_re.captures(line) {
+        if let Some(cap) = py_import_re().captures(line) {
             for module in cap[1].split(',').map(str::trim).filter(|m| !m.is_empty()) {
                 imports.push(import(path, line, module, idx + 1));
             }
-        } else if let Some(cap) = from_re.captures(line) {
+        } else if let Some(cap) = py_from_re().captures(line) {
             imports.push(import(path, line, &cap[1], idx + 1));
         }
     }
@@ -256,20 +248,81 @@ fn extract_python_imports(path: &str, source: &str) -> Vec<ImportRecord> {
 }
 
 fn extract_js_ts_imports(path: &str, source: &str) -> Vec<ImportRecord> {
-    let import_re = Regex::new(r#"^\s*import(?:[^'"]+from\s+)?['"]([^'"]+)['"]"#).unwrap();
-    let require_re = Regex::new(r#"require\(['"]([^'"]+)['"]\)"#).unwrap();
-    let export_re = Regex::new(r#"^\s*export\s+.*\s+from\s+['"]([^'"]+)['"]"#).unwrap();
     let mut imports = Vec::new();
     for (idx, line) in source.lines().enumerate() {
-        if let Some(cap) = import_re.captures(line) {
+        if let Some(cap) = js_import_re().captures(line) {
             imports.push(import(path, line, &cap[1], idx + 1));
-        } else if let Some(cap) = require_re.captures(line) {
+        } else if let Some(cap) = js_require_re().captures(line) {
             imports.push(import(path, line, &cap[1], idx + 1));
-        } else if let Some(cap) = export_re.captures(line) {
+        } else if let Some(cap) = js_export_re().captures(line) {
             imports.push(import(path, line, &cap[1], idx + 1));
         }
     }
     imports
+}
+
+fn cached_regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
+    cell.get_or_init(|| Regex::new(pattern).expect("static regex must compile"))
+}
+
+fn py_def_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
+}
+
+fn py_class_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\([^)]*\))?")
+}
+
+fn py_import_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*import\s+([A-Za-z0-9_.,\s]+)")
+}
+
+fn py_from_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*from\s+([A-Za-z0-9_\.]+)\s+import\s+")
+}
+
+fn js_function_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(export\s+)?(async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+}
+
+fn js_class_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+}
+
+fn js_interface_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+}
+
+fn js_type_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(export\s+)?type\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+}
+
+fn js_const_fn_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(async\s*)?\([^)]*\)\s*=>")
+}
+
+fn js_import_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r#"^\s*import(?:[^'"]+from\s+)?['"]([^'"]+)['"]"#)
+}
+
+fn js_require_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r#"require\(['"]([^'"]+)['"]\)"#)
+}
+
+fn js_export_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r#"^\s*export\s+.*\s+from\s+['"]([^'"]+)['"]"#)
 }
 
 fn import(path: &str, line: &str, module: &str, line_no: usize) -> ImportRecord {
