@@ -358,6 +358,31 @@ fn js_export_re() -> &'static Regex {
     cached_regex(&RE, r#"^\s*export\s+.*\s+from\s+['"]([^'"]+)['"]"#)
 }
 
+fn rust_fn_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?(async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)")
+}
+
+fn rust_struct_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)")
+}
+
+fn rust_enum_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)")
+}
+
+fn rust_trait_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*(pub(\([^)]*\))?\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)")
+}
+
+fn rust_use_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    cached_regex(&RE, r"^\s*use\s+([^;]+);")
+}
+
 fn import(path: &str, line: &str, module: &str, line_no: usize) -> ImportRecord {
     ImportRecord {
         id: stable_hash(format!("import:{path}:{line_no}:{module}")),
@@ -411,5 +436,23 @@ export const refresh = () => {};
         assert_eq!(symbols.len(), 5);
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "./auth");
+    }
+
+    #[test]
+    fn extracts_rust_symbols_and_imports() {
+        let source = r#"
+use std::path::Path;
+pub struct GraphStore {}
+pub enum EdgeKind {}
+pub trait Analyzer {}
+pub fn scan_current() {}
+"#;
+        let symbols = extract_rust_symbols("src/lib.rs", source);
+        let imports = extract_rust_imports("src/lib.rs", source);
+
+        assert_eq!(symbols.len(), 4);
+        assert_eq!(symbols[0].name, "GraphStore");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].module, "std::path::Path");
     }
 }
