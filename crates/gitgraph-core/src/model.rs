@@ -110,6 +110,7 @@ pub enum Language {
     Python,
     JavaScript,
     TypeScript,
+    Rust,
     Unknown,
 }
 
@@ -121,6 +122,9 @@ pub enum SymbolKind {
     Method,
     Interface,
     Type,
+    Struct,
+    Enum,
+    Trait,
     Variable,
 }
 
@@ -149,6 +153,7 @@ impl Language {
             "py" => Self::Python,
             "js" | "jsx" | "mjs" | "cjs" => Self::JavaScript,
             "ts" | "tsx" => Self::TypeScript,
+            "rs" => Self::Rust,
             _ => Self::Unknown,
         }
     }
@@ -158,6 +163,7 @@ impl Language {
             Self::Python => "python",
             Self::JavaScript => "javascript",
             Self::TypeScript => "typescript",
+            Self::Rust => "rust",
             Self::Unknown => "unknown",
         }
     }
@@ -167,4 +173,3 @@ pub fn stable_hash(input: impl AsRef<[u8]>) -> String {
     let digest = Sha256::digest(input.as_ref());
     format!("{digest:x}")
 }
-
