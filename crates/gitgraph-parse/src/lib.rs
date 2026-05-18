@@ -682,14 +682,16 @@ export const refresh = () => {};
 
     #[test]
     fn extracts_rust_symbols_and_imports() {
-        let source = "\
-use std::path::Path;\n\
-pub struct GraphStore {}\n\
-pub enum EdgeKind {}\n\
-pub trait Analyzer {}\n\
-pub fn scan_current() {}\n";
-        let symbols = extract_rust_symbols("src/lib.rs", source);
-        let imports = extract_rust_imports("src/lib.rs", source);
+        let source = [
+            "use std::path::Path;",
+            "pub struct GraphStore {}",
+            "pub enum EdgeKind {}",
+            "pub trait Analyzer {}",
+            "pub fn scan_current() {}",
+        ]
+        .join("\n");
+        let symbols = extract_rust_symbols("src/lib.rs", &source);
+        let imports = extract_rust_imports("src/lib.rs", &source);
 
         assert_eq!(symbols.len(), 4);
         assert_eq!(symbols[0].name, "GraphStore");
