@@ -167,6 +167,9 @@ impl SymbolKindLabel for SymbolRecord {
             gitgraph_core::SymbolKind::Method => "method",
             gitgraph_core::SymbolKind::Interface => "interface",
             gitgraph_core::SymbolKind::Type => "type",
+            gitgraph_core::SymbolKind::Struct => "struct",
+            gitgraph_core::SymbolKind::Enum => "enum",
+            gitgraph_core::SymbolKind::Trait => "trait",
             gitgraph_core::SymbolKind::Variable => "variable",
         }
     }
