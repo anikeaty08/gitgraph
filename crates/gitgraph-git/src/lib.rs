@@ -58,10 +58,11 @@ pub fn scan_history(repo_root: &Path, options: &HistoryOptions) -> Result<Histor
         } else {
             for parent in commit.parents() {
                 let parent_tree = parent.tree()?;
+                let mut diff_options = DiffOptions::new();
                 let mut diff = repo.diff_tree_to_tree(
                     Some(&parent_tree),
                     Some(&tree),
-                    Some(&mut DiffOptions::new()),
+                    Some(&mut diff_options),
                 )?;
                 let mut find_options = DiffFindOptions::new();
                 find_options.renames(true).copies(true);
