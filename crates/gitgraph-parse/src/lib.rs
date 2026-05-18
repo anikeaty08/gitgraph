@@ -282,3 +282,48 @@ fn import(path: &str, line: &str, module: &str, line_no: usize) -> ImportRecord 
         confidence: 0.6,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_python_symbols_and_imports() {
+        let source = r#"
+import os
+from app.auth import token
+
+class Session:
+    pass
+
+def create_session(user):
+    return user
+"#;
+        let symbols = extract_python_symbols("app/session.py", source);
+        let imports = extract_python_imports("app/session.py", source);
+
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "Session");
+        assert_eq!(symbols[1].name, "create_session");
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[1].module, "app.auth");
+    }
+
+    #[test]
+    fn extracts_typescript_symbols_and_imports() {
+        let source = r#"
+import { validate } from "./auth";
+export interface User { id: string }
+export type Token = string;
+export class Session {}
+export function createSession() {}
+export const refresh = () => {};
+"#;
+        let symbols = extract_js_ts_symbols("src/session.ts", Language::TypeScript, source);
+        let imports = extract_js_ts_imports("src/session.ts", source);
+
+        assert_eq!(symbols.len(), 5);
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].module, "./auth");
+    }
+}

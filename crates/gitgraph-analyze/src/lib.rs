@@ -110,3 +110,42 @@ pub fn reachable_path(imports: &[ImportRecord], from: &str, to: &str, max_depth:
     Ok(None)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gitgraph_core::{Language, SymbolKind};
+
+    #[test]
+    fn dead_code_skips_entrypoints() {
+        let symbols = vec![
+            SymbolRecord {
+                id: "1".to_string(),
+                stable_id: "main".to_string(),
+                name: "main".to_string(),
+                kind: SymbolKind::Function,
+                language: Language::Python,
+                signature: "def main()".to_string(),
+                file_path: "app.py".to_string(),
+                start_line: 1,
+                end_line: 1,
+                body_hash: "a".to_string(),
+            },
+            SymbolRecord {
+                id: "2".to_string(),
+                stable_id: "unused".to_string(),
+                name: "unused".to_string(),
+                kind: SymbolKind::Function,
+                language: Language::Python,
+                signature: "def unused()".to_string(),
+                file_path: "app.py".to_string(),
+                start_line: 2,
+                end_line: 2,
+                body_hash: "b".to_string(),
+            },
+        ];
+
+        let rows = dead_code_candidates(&symbols, &[], 0.7);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "unused");
+    }
+}

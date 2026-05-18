@@ -249,3 +249,16 @@ CREATE REL TABLE REACHES(FROM File TO File, FROM Symbol TO Symbol, confidence DO
 "#
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_contains_core_tables() {
+        let schema = kuzu_schema();
+        assert!(schema.contains("CREATE NODE TABLE Repo"));
+        assert!(schema.contains("CREATE NODE TABLE Symbol"));
+        assert!(schema.contains("CREATE REL TABLE CALLS"));
+        assert!(schema.contains("CREATE REL TABLE CO_CHANGED"));
+    }
+}

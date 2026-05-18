@@ -51,15 +51,19 @@ pub fn scan_history(repo_root: &Path, options: &HistoryOptions) -> Result<Histor
 
         let tree = commit.tree()?;
         if commit.parent_count() == 0 {
-            let diff = repo.diff_tree_to_tree(None, Some(&tree), Some(DiffOptions::new().include_untracked(false)))?;
+            let mut diff_options = DiffOptions::new();
+            diff_options.include_untracked(false);
+            let diff = repo.diff_tree_to_tree(None, Some(&tree), Some(&mut diff_options))?;
             collect_file_changes(&hash, &diff, &mut file_changes)?;
         } else {
             for parent in commit.parents() {
                 let parent_tree = parent.tree()?;
+                let mut diff_options = DiffOptions::new();
+                diff_options.find_copies(true);
                 let diff = repo.diff_tree_to_tree(
                     Some(&parent_tree),
                     Some(&tree),
-                    Some(DiffOptions::new().find_copies(true)),
+                    Some(&mut diff_options),
                 )?;
                 collect_file_changes(&hash, &diff, &mut file_changes)?;
             }
@@ -113,4 +117,3 @@ fn map_status(delta: Delta) -> ChangeStatus {
         _ => ChangeStatus::Unknown,
     }
 }
-

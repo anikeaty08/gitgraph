@@ -76,13 +76,13 @@ fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
                 .into_iter()
                 .filter(|s| s.file_path == path)
                 .map(serde_json::to_value)
-                .collect::<Result<_, _>>()?;
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             let imports: Vec<_> = store
                 .imports()?
                 .into_iter()
                 .filter(|i| i.file_path == path)
                 .map(serde_json::to_value)
-                .collect::<Result<_, _>>()?;
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             McpResponse {
                 answer: format!("Found {} symbols and {} imports in {path}.", symbols.len(), imports.len()),
                 confidence: 0.9,
@@ -98,7 +98,7 @@ fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
                 .query(query, limit)?
                 .into_iter()
                 .map(serde_json::to_value)
-                .collect::<Result<_, _>>()?;
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             McpResponse {
                 answer: format!("Found {} indexed matches for '{query}'.", hits.len()),
                 confidence: 0.7,
@@ -113,7 +113,10 @@ fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
             McpResponse {
                 answer: format!("Found {} dead-code candidates.", rows.len()),
                 confidence: 0.72,
-                nodes: rows.into_iter().map(serde_json::to_value).collect::<Result<_, _>>()?,
+                nodes: rows
+                    .into_iter()
+                    .map(serde_json::to_value)
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
                 edges: vec![],
                 suggested_next_reads: vec![],
             }
@@ -133,4 +136,3 @@ fn call_tool(store: &GraphStore, params: Value) -> Result<Value> {
         }]
     }))
 }
-

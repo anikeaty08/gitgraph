@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "gitgraph", version, about = "Temporal code knowledge graph CLI + MCP server")]
 struct Cli {
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    #[arg(long, value_enum, global = true, default_value = "text")]
     format: OutputFormat,
     #[command(subcommand)]
     command: Command,
@@ -129,33 +129,34 @@ fn main() -> Result<()> {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let format = cli.format;
     match cli.command {
         Command::Init(arg) => {
             let store = GraphStore::open(&arg.repo)?;
             store.init()?;
-            print(&cli.format, &format!("initialized gitgraph at {}", arg.repo.display()), &store.status()?)
+            print(&format, &format!("initialized gitgraph at {}", arg.repo.display()), &store.status()?)
         }
         Command::Status(arg) => {
             let store = GraphStore::open(&arg.repo)?;
-            print(&cli.format, "gitgraph status", &store.status()?)
+            print(&format, "gitgraph status", &store.status()?)
         }
-        Command::Doctor(arg) => doctor(&cli.format, &arg.repo),
+        Command::Doctor(arg) => doctor(&format, &arg.repo),
         Command::Scan { command } => match command {
-            ScanCommand::Current { repo, .. } => scan_current(&cli.format, &repo),
+            ScanCommand::Current { repo, .. } => scan_current(&format, &repo),
             ScanCommand::History {
                 repo,
                 since,
                 max_commits,
                 ..
-            } => scan_history(&cli.format, &repo, since, max_commits),
+            } => scan_history(&format, &repo, since, max_commits),
         },
         Command::Analyze { command } => match command {
-            AnalyzeCommand::Communities(arg) => analyze_communities(&cli.format, &arg.repo),
-            AnalyzeCommand::DeadCode { repo, confidence_min } => analyze_dead_code(&cli.format, &repo, confidence_min),
+            AnalyzeCommand::Communities(arg) => analyze_communities(&format, &arg.repo),
+            AnalyzeCommand::DeadCode { repo, confidence_min } => analyze_dead_code(&format, &repo, confidence_min),
             AnalyzeCommand::Coupling(arg) => {
                 let store = GraphStore::open(&arg.repo)?;
                 let changes = store.file_changes()?;
-                print(&cli.format, &format!("coupling input has {} file changes", changes.len()), &changes)
+                print(&format, &format!("coupling input has {} file changes", changes.len()), &changes)
             }
             AnalyzeCommand::Embeddings(_) => {
                 println!("embeddings are optional and disabled until a local embedding model is configured");
@@ -165,7 +166,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Query { query, limit, repo } => {
             let store = GraphStore::open(&repo)?;
             let hits = store.query(&query, limit)?;
-            print(&cli.format, &format!("{} hits", hits.len()), &hits)
+            print(&format, &format!("{} hits", hits.len()), &hits)
         }
         Command::Path {
             from,
@@ -175,24 +176,27 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let store = GraphStore::open(&repo)?;
             let path = gitgraph_analyze::reachable_path(&store.imports()?, &from, &to, max_depth)?;
-            print(&cli.format, "reachable graph path, not guaranteed runtime execution", &path)
+            print(&format, "reachable graph path, not guaranteed runtime execution", &path)
         }
         Command::Explain { command } => match command {
-            ExplainCommand::File { path, repo } => explain_file(&cli.format, &repo, &path),
-            ExplainCommand::Commit { hash, repo } => explain_commit(&cli.format, &repo, &hash),
-            ExplainCommand::Symbol { symbol, repo } => explain_symbol(&cli.format, &repo, &symbol),
+            ExplainCommand::File { path, repo } => explain_file(&format, &repo, &path),
+            ExplainCommand::Commit { hash, repo } => explain_commit(&format, &repo, &hash),
+            ExplainCommand::Symbol { symbol, repo } => explain_symbol(&format, &repo, &symbol),
         },
         Command::Mcp(arg) => gitgraph_mcp::serve_stdio(&arg.repo),
     }
 }
 
 fn scan_current(format: &OutputFormat, repo: &PathBuf) -> Result<()> {
-    let store = GraphStore::open(repo)?;
+    let root = repo
+        .canonicalize()
+        .with_context(|| format!("failed to resolve repo path {}", repo.display()))?;
+    let store = GraphStore::open(&root)?;
     store.init()?;
     let config = store.config()?;
     let snapshot = gitgraph_parse::scan_current(
         store.repo_record(),
-        repo,
+        &root,
         &CurrentScanOptions {
             max_file_bytes: config.scan.max_file_bytes,
             follow_symlinks: config.scan.follow_symlinks,
@@ -302,4 +306,3 @@ fn print<T: serde::Serialize>(format: &OutputFormat, message: &str, value: &T) -
         }
     }
 }
-
