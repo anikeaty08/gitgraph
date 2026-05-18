@@ -158,6 +158,7 @@ fn extract_symbols(path: &str, language: Language, source: &str) -> Vec<SymbolRe
     match language {
         Language::Python => extract_python_symbols(path, source),
         Language::JavaScript | Language::TypeScript => extract_js_ts_symbols(path, language, source),
+        Language::Rust => extract_rust_symbols(path, source),
         Language::Unknown => Vec::new(),
     }
 }
@@ -201,6 +202,27 @@ fn extract_js_ts_symbols(path: &str, language: Language, source: &str) -> Vec<Sy
     symbols
 }
 
+fn extract_rust_symbols(path: &str, source: &str) -> Vec<SymbolRecord> {
+    let mut symbols = Vec::new();
+    for (idx, line) in source.lines().enumerate() {
+        let line_no = idx + 1;
+        if let Some(cap) = rust_fn_re().captures(line) {
+            let name = cap[4].to_string();
+            symbols.push(symbol(path, Language::Rust, SymbolKind::Function, &name, line.trim(), line_no, line));
+        } else if let Some(cap) = rust_struct_re().captures(line) {
+            let name = cap[3].to_string();
+            symbols.push(symbol(path, Language::Rust, SymbolKind::Struct, &name, line.trim(), line_no, line));
+        } else if let Some(cap) = rust_enum_re().captures(line) {
+            let name = cap[3].to_string();
+            symbols.push(symbol(path, Language::Rust, SymbolKind::Enum, &name, line.trim(), line_no, line));
+        } else if let Some(cap) = rust_trait_re().captures(line) {
+            let name = cap[3].to_string();
+            symbols.push(symbol(path, Language::Rust, SymbolKind::Trait, &name, line.trim(), line_no, line));
+        }
+    }
+    symbols
+}
+
 fn symbol(
     path: &str,
     language: Language,
@@ -229,6 +251,7 @@ fn extract_imports(path: &str, language: Language, source: &str) -> Vec<ImportRe
     match language {
         Language::Python => extract_python_imports(path, source),
         Language::JavaScript | Language::TypeScript => extract_js_ts_imports(path, source),
+        Language::Rust => extract_rust_imports(path, source),
         Language::Unknown => Vec::new(),
     }
 }
@@ -255,6 +278,16 @@ fn extract_js_ts_imports(path: &str, source: &str) -> Vec<ImportRecord> {
         } else if let Some(cap) = js_require_re().captures(line) {
             imports.push(import(path, line, &cap[1], idx + 1));
         } else if let Some(cap) = js_export_re().captures(line) {
+            imports.push(import(path, line, &cap[1], idx + 1));
+        }
+    }
+    imports
+}
+
+fn extract_rust_imports(path: &str, source: &str) -> Vec<ImportRecord> {
+    let mut imports = Vec::new();
+    for (idx, line) in source.lines().enumerate() {
+        if let Some(cap) = rust_use_re().captures(line) {
             imports.push(import(path, line, &cap[1], idx + 1));
         }
     }
