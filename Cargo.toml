@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/gitgraph-analyze",
+    "crates/gitgraph-cli",
+    "crates/gitgraph-core",
+    "crates/gitgraph-git",
+    "crates/gitgraph-mcp",
+    "crates/gitgraph-parse",
+    "crates/gitgraph-store",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://example.invalid/gitgraph"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+git2 = "0.20"
+ignore = "0.4"
+petgraph = "0.8"
+rayon = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2"
+

@@ -1,0 +1,24 @@
+[package]
+name = "gitgraph-cli"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "gitgraph"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+gitgraph-analyze = { path = "../gitgraph-analyze" }
+gitgraph-core = { path = "../gitgraph-core" }
+gitgraph-git = { path = "../gitgraph-git" }
+gitgraph-mcp = { path = "../gitgraph-mcp" }
+gitgraph-parse = { path = "../gitgraph-parse" }
+gitgraph-store = { path = "../gitgraph-store" }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+

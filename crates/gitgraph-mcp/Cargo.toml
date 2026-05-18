@@ -1,0 +1,15 @@
+[package]
+name = "gitgraph-mcp"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gitgraph-analyze = { path = "../gitgraph-analyze" }
+gitgraph-core = { path = "../gitgraph-core" }
+gitgraph-store = { path = "../gitgraph-store" }
+serde.workspace = true
+serde_json.workspace = true
+
