@@ -384,6 +384,7 @@ dependencies = [
  "gitgraph-mcp",
  "gitgraph-parse",
  "gitgraph-store",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
