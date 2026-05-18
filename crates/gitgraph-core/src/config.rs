@@ -50,10 +50,11 @@ impl Default for GitGraphConfig {
         Self {
             scan: ScanConfig {
                 languages: vec![
-                    "python".to_string(),
-                    "javascript".to_string(),
-                    "typescript".to_string(),
-                ],
+                "python".to_string(),
+                "javascript".to_string(),
+                "typescript".to_string(),
+                "rust".to_string(),
+            ],
                 max_file_bytes: 1_000_000,
                 include_lockfiles: false,
                 follow_symlinks: false,
@@ -100,4 +101,3 @@ impl GitGraphConfig {
         fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))
     }
 }
-
